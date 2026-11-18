@@ -17,7 +17,7 @@ WaterH Sync does. It watches for your bottle and syncs it whenever the bottle wa
 - **Background sync**: syncs automatically when the bottle wakes up nearby. Survives reboots and app updates.
 - **Safe by design**: drinks are cleared from the bottle only after WaterH has accepted them. If the upload fails, they stay on the bottle and go up on the next sync.
 - **Keeps the bottle's clock right**: sets the time on every sync, as the official app does, without touching your goal or reminder settings.
-- **Bottle status**: battery level, charging state, and the bottle's own total for today.
+- **Bottle status**: battery level, charging state, and the bottle's own total for today, optionally sent to Home Assistant.
 - **Material You design**: follows your wallpaper colors and dark mode.
 - **Diagnostics**: a read-only "Check bottle" and a copyable log for troubleshooting.
 
@@ -44,6 +44,15 @@ Or build it yourself (see [Building](#building)).
 
 While automatic sync is on, a small "Watching for your bottle" notification stays visible. That's Android's requirement for apps that keep running in the background. You can minimize it in the system notification settings.
 
+### Battery and charging in Home Assistant (optional)
+
+The [WaterH Home Assistant integration](https://github.com/raymanvh/ha-waterh) can show the bottle's battery level and charging state, which only this app can read:
+
+1. In Home Assistant, open **Settings → Devices & services → WaterH → Configure** and copy the webhook URL.
+2. In WaterH Sync, open **Settings → Home Assistant → Set up**, paste it, and tap **Save**.
+
+The app reports after every sync; **Send test** reports right away. If you use an `http://` local address, it's only reachable at home, and reports while you're away will fail quietly. Use your external or Nabu Casa remote URL to report from anywhere.
+
 **If syncs seem delayed**, set the app's battery usage to **Unrestricted**: long-press the app icon → **App info** → **App battery usage** → **Unrestricted**.
 
 ## How it works
@@ -63,7 +72,7 @@ The Bluetooth protocol is documented in [docs/PROTOCOL.md](docs/PROTOCOL.md).
 ## Privacy
 
 - Your **password is never stored**. It's sent once to WaterH to get a sign-in token, which is kept in the app's private storage.
-- The app talks only to **your bottle** and **api.waterh.com**. No analytics, no other servers.
+- The app talks only to **your bottle**, **api.waterh.com**, and (if you set it up) **your own Home Assistant**. No analytics, no other servers.
 - The WaterH client ID and secret in the source are the official app's public app credentials (the same ones every copy of the WaterH app ships with), not personal keys.
 
 ## Building

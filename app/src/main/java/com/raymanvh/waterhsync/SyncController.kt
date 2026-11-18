@@ -93,6 +93,13 @@ class SyncController private constructor(context: Context) : BottleClient.Listen
     /** Set by [SyncService] to refresh its notification. */
     var onBackgroundUpdate: (() -> Unit)? = null
 
+    // ---- Home Assistant (optional) ----
+    var haWebhookUrl by mutableStateOf(prefs.getString(KEY_HA_WEBHOOK, null))
+        private set
+    /** Result of the last report to Home Assistant, for the settings screen. */
+    var haStatus by mutableStateOf(prefs.getString(KEY_HA_STATUS, null))
+        private set
+
     // ---- scanning ----
     var scanning by mutableStateOf(false)
         private set
@@ -194,6 +201,45 @@ class SyncController private constructor(context: Context) : BottleClient.Listen
             .putInt("today_ml", info.todayMl ?: -1)
             .putLong("info_at", info.seenAt)
             .apply()
+        reportToHomeAssistant(info)
+    }
+
+    // ======================================================================
+    // Home Assistant
+
+    /** Saves the webhook URL from the WaterH integration (blank clears it). */
+    fun setHomeAssistantUrl(url: String) {
+        val clean = url.trim().ifBlank { null }
+        haWebhookUrl = clean
+        haStatus = null
+        prefs.edit().putString(KEY_HA_WEBHOOK, clean).remove(KEY_HA_STATUS).apply()
+        if (clean != null) bottleInfo?.let { reportToHomeAssistant(it) }
+    }
+
+    /** Sends the last known bottle status again (the "Send test" button). */
+    fun sendHomeAssistantTest() {
+        val info = bottleInfo
+        if (info == null) {
+            haStatus = "Sync once first so there's bottle status to send."
+            return
+        }
+        reportToHomeAssistant(info)
+    }
+
+    private fun reportToHomeAssistant(info: BottleInfo) {
+        val url = haWebhookUrl ?: return
+        io.execute {
+            val result = runCatching { HomeAssistantReporter.send(url, info) }
+            main.post {
+                val time = java.time.LocalTime.now().withNano(0)
+                val text = result.fold(
+                    onSuccess = { "Reported to Home Assistant at $time" },
+                    onFailure = { "Couldn't reach Home Assistant at $time: ${it.message}" },
+                )
+                haStatus = text
+                prefs.edit().putString(KEY_HA_STATUS, text).apply()
+            }
+        }
     }
 
     override fun onLive(update: Packet.Live) {
@@ -395,5 +441,7 @@ class SyncController private constructor(context: Context) : BottleClient.Listen
         private const val KEY_LAST_RESULT = "last_result"
         private const val KEY_HISTORY = "history"
         const val KEY_AUTO_SYNC = "auto_sync"
+        private const val KEY_HA_WEBHOOK = "ha_webhook"
+        private const val KEY_HA_STATUS = "ha_status"
     }
 }

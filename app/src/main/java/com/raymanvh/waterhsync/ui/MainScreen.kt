@@ -403,6 +403,8 @@ private fun SettingsCard(c: SyncController, withPermissions: (() -> Unit) -> Uni
             )
         }
         HorizontalDivider(Modifier.padding(vertical = 4.dp))
+        HomeAssistantSetting(c)
+        HorizontalDivider(Modifier.padding(vertical = 4.dp))
         SettingRow(
             title = "WaterH account",
             subtitle = if (c.signedIn) (c.email ?: "Signed in") + " · ${if (c.imperial) "oz" else "mL"}" else "Not signed in",
@@ -416,6 +418,61 @@ private fun SettingsCard(c: SyncController, withPermissions: (() -> Unit) -> Uni
             action = if (c.bottleAddress != null) "Change" else null,
             onAction = { c.forgetBottle() },
         )
+    }
+}
+
+@Composable
+private fun HomeAssistantSetting(c: SyncController) {
+    var editing by rememberSaveable { mutableStateOf(false) }
+    var draft by rememberSaveable { mutableStateOf(c.haWebhookUrl ?: "") }
+    Column(Modifier.fillMaxWidth().padding(vertical = 6.dp).animateContentSize()) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("Home Assistant", style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium)
+                Text(
+                    when {
+                        c.haWebhookUrl == null -> "Optional: send battery and charging to the WaterH integration."
+                        c.haStatus != null -> c.haStatus!!
+                        else -> "Connected; reports after each sync."
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            TextButton(onClick = {
+                draft = c.haWebhookUrl ?: ""
+                editing = !editing
+            }) { Text(if (editing) "Close" else if (c.haWebhookUrl == null) "Set up" else "Edit") }
+        }
+        if (editing) {
+            Text(
+                "In Home Assistant: Settings → Devices & services → WaterH → Configure. Copy the webhook URL shown there and paste it here.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 6.dp),
+            )
+            Spacer(Modifier.height(8.dp))
+            OutlinedTextField(
+                value = draft,
+                onValueChange = { draft = it },
+                label = { Text("Webhook URL") },
+                placeholder = { Text("https://…/api/webhook/…") },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Spacer(Modifier.height(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Button(
+                    onClick = { c.setHomeAssistantUrl(draft); editing = false },
+                    enabled = draft.isBlank() || draft.trim().startsWith("http"),
+                ) { Text("Save") }
+                if (c.haWebhookUrl != null) {
+                    OutlinedButton(onClick = { c.sendHomeAssistantTest() }) { Text("Send test") }
+                    TextButton(onClick = { c.setHomeAssistantUrl(""); draft = ""; editing = false }) { Text("Remove") }
+                }
+            }
+        }
     }
 }
 
