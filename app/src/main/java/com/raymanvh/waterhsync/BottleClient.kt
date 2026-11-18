@@ -54,6 +54,11 @@ class BottleClient(private val context: Context, private val listener: Listener)
         fun onFinished(error: String?)
     }
 
+    private companion object {
+        /** Sanity range for a goal written to the bottle (the WaterH app allows 500–10,000 mL). */
+        val GOAL_RANGE_ML = 500..10_000
+    }
+
     private enum class Stage { IDLE, CONNECTING, STATUS, SETTINGS, LOGS, UPLOADING, CLEARING, DONE }
 
     private val main = Handler(Looper.getMainLooper())
@@ -72,6 +77,12 @@ class BottleClient(private val context: Context, private val listener: Listener)
 
     var deviceName: String? = null
         private set
+
+    /**
+     * Goal to write to the bottle on sync (your WaterH account goal, in mL).
+     * When it returns null, the bottle's own goal is resent unchanged.
+     */
+    var goalProvider: (() -> Int?)? = null
 
     /** Starts a session. With [readOnly] nothing on the bottle is changed. */
     fun start(address: String, readOnly: Boolean) {
@@ -243,14 +254,15 @@ class BottleClient(private val context: Context, private val listener: Listener)
             is Packet.BoostStatus -> {
                 listener.onStatus(packet)
                 if (stage != Stage.STATUS) return
-                val goal = packet.goalMl
+                val goal = goalProvider?.invoke()?.takeIf { it in GOAL_RANGE_ML } ?: packet.goalMl
                 val reminder = packet.reminderHex
                 if (!readOnly && goal != null && reminder != null) {
                     stage = Stage.SETTINGS
                     listener.onProgress("Setting the bottle's clock…")
                     armTimeout(6_000, null)
-                    // Resend the bottle's own goal and reminder so only the clock changes.
-                    sendLater(g, WaterH.syncSettings(goal, LocalDateTime.now(), reminder), "set clock", 1_000)
+                    // Reminder settings are resent unchanged; the goal follows the account.
+                    val label = if (goal != packet.goalMl) "set clock, goal ${packet.goalMl} → $goal mL" else "set clock"
+                    sendLater(g, WaterH.syncSettings(goal, LocalDateTime.now(), reminder), label, 1_000)
                 } else {
                     requestLogs()
                 }

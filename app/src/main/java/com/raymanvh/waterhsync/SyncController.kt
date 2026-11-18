@@ -84,6 +84,14 @@ class SyncController private constructor(context: Context) : BottleClient.Listen
     private var readOnlyRun = false
     private var backgroundRun = false
 
+    /** Account goal in mL, written to the bottle on each sync so its display matches WaterH. */
+    private var accountGoalMl: Int? = prefs.getInt(KEY_GOAL, -1).takeIf { it > 0 }
+    private var goalFetchedAt = 0L
+
+    init {
+        client.goalProvider = { accountGoalMl }
+    }
+
     // ---- background sync ----
     var autoSync by mutableStateOf(prefs.getBoolean(KEY_AUTO_SYNC, false))
         private set
@@ -120,6 +128,7 @@ class SyncController private constructor(context: Context) : BottleClient.Listen
                     signedIn = true
                     this.email = api.email
                     imperial = it.imperial
+                    saveGoal(it.goalMl)
                 }.onFailure {
                     signInError = it.message ?: "Sign-in failed"
                 }
@@ -168,6 +177,7 @@ class SyncController private constructor(context: Context) : BottleClient.Listen
             return
         }
         if (!background) stopScan()
+        if (!readOnly) refreshGoalIfStale()
         readOnlyRun = readOnly
         backgroundRun = background
         rawLog.clear()
@@ -202,6 +212,30 @@ class SyncController private constructor(context: Context) : BottleClient.Listen
             .putLong("info_at", info.seenAt)
             .apply()
         reportToHomeAssistant(info)
+    }
+
+    /**
+     * Re-reads the account goal at most every 10 minutes. It runs alongside the
+     * Bluetooth connection, which takes a few seconds before the goal is needed;
+     * if it isn't back in time, the cached goal is used.
+     */
+    private fun refreshGoalIfStale() {
+        val now = System.currentTimeMillis()
+        if (now - goalFetchedAt < 10 * 60_000) return
+        goalFetchedAt = now
+        io.execute {
+            val account = runCatching { api.refreshAccount() }.getOrNull() ?: return@execute
+            main.post {
+                saveGoal(account.goalMl)
+                imperial = account.imperial
+            }
+        }
+    }
+
+    private fun saveGoal(goalMl: Int?) {
+        if (goalMl == null || goalMl <= 0) return
+        accountGoalMl = goalMl
+        prefs.edit().putInt(KEY_GOAL, goalMl).apply()
     }
 
     // ======================================================================
@@ -442,6 +476,7 @@ class SyncController private constructor(context: Context) : BottleClient.Listen
         private const val KEY_HISTORY = "history"
         const val KEY_AUTO_SYNC = "auto_sync"
         private const val KEY_HA_WEBHOOK = "ha_webhook"
+        private const val KEY_GOAL = "account_goal_ml"
         private const val KEY_HA_STATUS = "ha_status"
     }
 }
