@@ -86,7 +86,8 @@ class SyncController private constructor(context: Context) : BottleClient.Listen
 
     /** Account goal in mL, written to the bottle on each sync so its display matches WaterH. */
     private var accountGoalMl: Int? = prefs.getInt(KEY_GOAL, -1).takeIf { it > 0 }
-    private var goalFetchedAt = 0L
+    /** A sync waiting on the goal lookup was cancelled before it reached the bottle. */
+    private var startCancelled = false
 
     init {
         client.goalProvider = { accountGoalMl }
@@ -177,18 +178,45 @@ class SyncController private constructor(context: Context) : BottleClient.Listen
             return
         }
         if (!background) stopScan()
-        if (!readOnly) refreshGoalIfStale()
         readOnlyRun = readOnly
         backgroundRun = background
         rawLog.clear()
         if (!background) error = null
         busy = true
-        progress = "Starting…"
+        startCancelled = false
         onBackgroundUpdate?.invoke()
-        client.start(address, readOnly)
+        if (readOnly) {
+            progress = "Starting…"
+            client.start(address, readOnly = true)
+            return
+        }
+        // Read the account goal first so this sync writes the current one to the bottle.
+        progress = "Checking your WaterH goal…"
+        io.execute {
+            val result = runCatching { api.refreshAccount() }
+            main.post {
+                result.onSuccess {
+                    saveGoal(it.goalMl)
+                    imperial = it.imperial
+                    onRaw("Account goal: ${it.goalMl ?: "not set"} mL")
+                }.onFailure {
+                    onRaw("Couldn't read account goal (${it.message}); using ${accountGoalMl?.let { g -> "saved $g mL" } ?: "the bottle's own"}")
+                }
+                if (startCancelled) return@post
+                client.start(address, readOnly = false)
+            }
+        }
     }
 
-    fun cancel() = client.cancel()
+    fun cancel() {
+        if (client.isBusy) {
+            client.cancel()
+        } else if (busy) {
+            // Still looking up the goal; the bottle session hasn't started.
+            startCancelled = true
+            onFinished("Cancelled")
+        }
+    }
 
     override fun onProgress(message: String) {
         progress = message
@@ -212,24 +240,6 @@ class SyncController private constructor(context: Context) : BottleClient.Listen
             .putLong("info_at", info.seenAt)
             .apply()
         reportToHomeAssistant(info)
-    }
-
-    /**
-     * Re-reads the account goal at most every 10 minutes. It runs alongside the
-     * Bluetooth connection, which takes a few seconds before the goal is needed;
-     * if it isn't back in time, the cached goal is used.
-     */
-    private fun refreshGoalIfStale() {
-        val now = System.currentTimeMillis()
-        if (now - goalFetchedAt < 10 * 60_000) return
-        goalFetchedAt = now
-        io.execute {
-            val account = runCatching { api.refreshAccount() }.getOrNull() ?: return@execute
-            main.post {
-                saveGoal(account.goalMl)
-                imperial = account.imperial
-            }
-        }
     }
 
     private fun saveGoal(goalMl: Int?) {
