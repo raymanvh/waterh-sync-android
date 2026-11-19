@@ -108,6 +108,9 @@ class SyncController private constructor(context: Context) : BottleClient.Listen
 
     /** Account goal in mL, written to the bottle on each sync so its display matches WaterH. */
     private var accountGoalMl: Int? = prefs.getInt(KEY_GOAL, -1).takeIf { it > 0 }
+    /** Local mode: Home Assistant's total for today, from this sync's check-in. */
+    private var haTodayMl: Int? = null
+
     /** A sync waiting on the goal lookup was cancelled before it reached the bottle. */
     private var startCancelled = false
 
@@ -217,14 +220,16 @@ class SyncController private constructor(context: Context) : BottleClient.Listen
         // Read the goal first so this sync writes the current one to the bottle.
         if (isLocal) {
             val url = haWebhookUrl ?: return
+            haTodayMl = null // Only write a total Home Assistant gave us during this sync.
             progress = "Checking Home Assistant…"
             io.execute {
                 val result = runCatching { HomeAssistantReporter.hello(url) }
                 main.post {
                     result.onSuccess {
                         saveGoal(it.goalMl)
+                        haTodayMl = it.todayMl
                         it.imperial?.let { imp -> applyImperial(imp) }
-                        onRaw("Home Assistant: mode ${it.mode ?: "?"}, goal ${it.goalMl ?: "not set"} mL")
+                        onRaw("Home Assistant: mode ${it.mode ?: "?"}, goal ${it.goalMl ?: "not set"} mL, today ${it.todayMl ?: "?"} mL")
                         if (it.mode == "cloud") onRaw("Warning: Home Assistant is in cloud mode and will refuse drinks")
                     }.onFailure {
                         // Still sync the bottle (clock, battery); drinks will wait on it.
@@ -353,6 +358,8 @@ class SyncController private constructor(context: Context) : BottleClient.Listen
         if (!complete) return // BottleClient finishes with an error and never clears.
         if (total == 0) {
             setResult("Up to date — no new drinks on the bottle.")
+            // Local mode: keep the bottle's "today" display equal to Home Assistant's.
+            client.completeSync(0, if (isLocal) haTodayMl else null)
             return
         }
         val address = bottleAddress ?: return client.finishWithoutClearing("No bottle selected")
@@ -388,7 +395,7 @@ class SyncController private constructor(context: Context) : BottleClient.Listen
         if (drinks.isEmpty()) {
             // Only flagged (non-drink) records: nothing to keep, clear them like the official app.
             setResult("Up to date — no new drinks on the bottle.")
-            client.confirmUploaded(total)
+            client.completeSync(total, haTodayMl)
             return
         }
         progress = "Sending ${drinks.size} drinks to Home Assistant…"
@@ -403,7 +410,7 @@ class SyncController private constructor(context: Context) : BottleClient.Listen
                         "Synced ${drinks.size} ${if (drinks.size == 1) "drink" else "drinks"} " +
                             "(${formatVolume(drinks.sumOf { d -> d.amountMl })}) to Home Assistant.",
                     )
-                    client.confirmUploaded(total)
+                    client.completeSync(total, it.todayMl)
                 }.onFailure {
                     client.finishWithoutClearing(
                         "Couldn't send to Home Assistant: ${it.message}. Your drinks are still on the bottle and will sync next time.",

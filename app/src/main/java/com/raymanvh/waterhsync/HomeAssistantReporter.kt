@@ -19,7 +19,14 @@ import java.time.ZoneId
 object HomeAssistantReporter {
 
     /** What Home Assistant tells the app on every call. */
-    data class Reply(val mode: String?, val accepted: Int, val goalMl: Int?, val imperial: Boolean?)
+    data class Reply(
+        val mode: String?,
+        val accepted: Int,
+        val goalMl: Int?,
+        val imperial: Boolean?,
+        /** Home Assistant's total for today (all drinks, manual included), in mL. */
+        val todayMl: Int?,
+    )
 
     class ModeMismatchException(message: String) : IOException(message)
 
@@ -84,6 +91,7 @@ object HomeAssistantReporter {
                 accepted = json.optInt("accepted", 0),
                 goalMl = json.optInt("goal_ml", 0).takeIf { it > 0 },
                 imperial = json.optString("unit").ifBlank { null }?.let { it == "oz" },
+                todayMl = if (json.has("today_ml") && !json.isNull("today_ml")) json.optInt("today_ml") else null,
             )
         } finally {
             conn.disconnect()

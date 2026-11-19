@@ -111,15 +111,34 @@ class BottleClient(private val context: Context, private val listener: Listener)
     fun cancel() = finish("Cancelled")
 
     /** WaterH accepted the upload: delete [total] records from the bottle and finish. */
-    fun confirmUploaded(total: Int) {
+    fun confirmUploaded(total: Int) = completeSync(total, null)
+
+    /**
+     * Ends a full sync: clears [clearRecords] records (if any) that have been
+     * saved elsewhere, then sets the bottle's own "today" total to [todayMl]
+     * (if given) so its display matches the source of truth.
+     */
+    fun completeSync(clearRecords: Int, todayMl: Int?) {
         val g = gatt ?: return
         if (stage != Stage.UPLOADING) return
+        if (clearRecords <= 0 && todayMl == null) {
+            done()
+            return
+        }
         stage = Stage.CLEARING
-        listener.onProgress("Clearing synced drinks from the bottle…")
-        armTimeout(8_000, null) // Finish quietly if the bottle doesn't answer.
-        sendLater(g, WaterH.clearRecords(total), "clear $total synced records", 1_000)
-        // The official app doesn't wait for a reply; give the write time to land.
-        main.postDelayed({ if (g == gatt && stage == Stage.CLEARING) done() }, 3_500)
+        armTimeout(12_000, null) // Finish quietly if the bottle doesn't answer.
+        var delay = 1_000L
+        if (clearRecords > 0) {
+            listener.onProgress("Clearing synced drinks from the bottle…")
+            sendLater(g, WaterH.clearRecords(clearRecords), "clear $clearRecords synced records", delay)
+            delay += 1_200
+        }
+        if (todayMl != null) {
+            sendLater(g, WaterH.setTodayTotal(todayMl), "set bottle's today total to $todayMl mL", delay)
+            delay += 1_200
+        }
+        // The official app doesn't wait for replies; give the writes time to land.
+        main.postDelayed({ if (g == gatt && stage == Stage.CLEARING) done() }, delay + 1_500)
     }
 
     /** Upload failed or was skipped: keep the drinks on the bottle and finish. */
@@ -276,8 +295,10 @@ class BottleClient(private val context: Context, private val listener: Listener)
             is Packet.NoLogs -> if (stage == Stage.LOGS) {
                 collector = LogCollector()
                 stage = Stage.UPLOADING
+                // The caller may still update the bottle's total; end quietly if it doesn't.
+                armTimeout(60_000, null)
                 listener.onLogs(emptyList(), emptyList(), 0, true)
-                done()
+                if (readOnly) finish(null)
             }
             is Packet.LogStart, is Packet.LogContinued -> {
                 if (stage != Stage.LOGS) return

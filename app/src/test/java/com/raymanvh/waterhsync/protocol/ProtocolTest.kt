@@ -55,6 +55,13 @@ class ProtocolTest {
     }
 
     @Test
+    fun setTodayTotalCommand() {
+        // 74.6 oz ≈ 2206 mL = 0x089E
+        assertEquals("505400040304089E", bytesToHex(WaterH.setTodayTotal(2206)))
+        assertEquals("5054000403040000", bytesToHex(WaterH.setTodayTotal(0)))
+    }
+
+    @Test
     fun clearCommand() {
         assertEquals("5250000403060027", bytesToHex(WaterH.clearRecords(3)))
     }

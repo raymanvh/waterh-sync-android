@@ -39,6 +39,13 @@ object WaterH {
     }
 
     /**
+     * Sets the bottle's own "today" total (status tag 4) to [ml]. The official
+     * app sends this with the account's daily total so the bottle matches it.
+     */
+    fun setTodayTotal(ml: Int): ByteArray =
+        hexToBytes("505400040304" + "%04x".format(ml.coerceIn(0, 0xffff)))
+
+    /**
      * Deletes [totalRecords] records (the total announced in the log reply,
      * including flagged ones) from the bottle. The official app sends this only
      * after WaterH accepted the upload (HTTP 2xx or 409 duplicate).
