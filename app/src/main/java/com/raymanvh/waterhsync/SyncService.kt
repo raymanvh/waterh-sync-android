@@ -93,7 +93,7 @@ class SyncService : Service() {
     private fun onBottleSeen() {
         val now = System.currentTimeMillis()
         lastSeen = now
-        if (controller.busy || !controller.signedIn) return
+        if (controller.busy || !controller.canSync) return
         if (now - lastAttempt < COOLDOWN_MS) return
         lastAttempt = now
         controller.syncInBackground()

@@ -114,7 +114,11 @@ fun MainScreen(c: SyncController, withPermissions: (() -> Unit) -> Unit) {
             ),
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
-            if (!c.signedIn) item { SignInCard(c) }
+            when {
+                c.mode == null -> item { ModeChoiceCard(c) }
+                c.isLocal && c.haWebhookUrl == null -> item { LocalConnectCard(c) }
+                !c.isLocal && !c.signedIn -> item { SignInCard(c) }
+            }
 
             if (c.bottleAddress == null) {
                 item { FindBottleCard(c, withPermissions) }
@@ -195,7 +199,7 @@ private fun HeroCard(c: SyncController, now: Long, withPermissions: (() -> Unit)
             } else {
                 Button(
                     onClick = { withPermissions { c.sync() } },
-                    enabled = c.signedIn,
+                    enabled = c.canSync,
                     modifier = Modifier.fillMaxWidth().height(56.dp),
                     shape = RoundedCornerShape(50),
                 ) {
@@ -203,9 +207,13 @@ private fun HeroCard(c: SyncController, now: Long, withPermissions: (() -> Unit)
                     Spacer(Modifier.width(10.dp))
                     Text("Sync now", fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
                 }
-                if (!c.signedIn) {
+                if (!c.canSync) {
                     Text(
-                        "Sign in to WaterH to sync.",
+                        when {
+                            c.mode == null -> "Choose how to sync first."
+                            c.isLocal -> "Connect to Home Assistant to sync."
+                            else -> "Sign in to WaterH to sync."
+                        },
                         style = MaterialTheme.typography.labelMedium,
                         modifier = Modifier.padding(top = 8.dp).align(Alignment.CenterHorizontally),
                     )
@@ -246,6 +254,90 @@ private fun StatTile(label: String, value: String, modifier: Modifier = Modifier
 }
 
 // ---------------------------------------------------------------------------
+
+@Composable
+private fun ModeChoiceCard(c: SyncController) {
+    SectionCard(title = "How should your drinks sync?") {
+        Text(
+            "You can change this later in Settings.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(12.dp))
+        ModeOption(
+            title = "Local only",
+            body = "Drinks go straight from your bottle to Home Assistant. No WaterH account, nothing sent to WaterH. " +
+                "Needs the WaterH integration in Home Assistant, set up in Local only mode.",
+            onClick = { c.chooseMode(SyncController.MODE_LOCAL) },
+        )
+        Spacer(Modifier.height(10.dp))
+        ModeOption(
+            title = "WaterH account",
+            body = "Drinks are uploaded to your WaterH account, as the official app does. They show up in the WaterH app " +
+                "and in the Home Assistant integration's cloud mode.",
+            onClick = { c.chooseMode(SyncController.MODE_CLOUD) },
+        )
+    }
+}
+
+@Composable
+private fun ModeOption(title: String, body: String, onClick: () -> Unit) {
+    Card(
+        onClick = onClick,
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(Modifier.padding(16.dp)) {
+            Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.height(4.dp))
+            Text(body, style = MaterialTheme.typography.bodyMedium)
+        }
+    }
+}
+
+@Composable
+private fun LocalConnectCard(c: SyncController) {
+    var url by rememberSaveable { mutableStateOf("") }
+    SectionCard(title = "Connect to Home Assistant") {
+        Text(
+            "1. In Home Assistant: Settings → Devices & services → Add integration → WaterH → Local only.\n" +
+                "2. Copy the webhook URL it shows and paste it here.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(12.dp))
+        OutlinedTextField(
+            value = url,
+            onValueChange = { url = it },
+            label = { Text("Webhook URL") },
+            placeholder = { Text("https://…/api/webhook/…") },
+            singleLine = true,
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+            modifier = Modifier.fillMaxWidth(),
+        )
+        c.connectError?.let {
+            Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 8.dp))
+        }
+        Spacer(Modifier.height(12.dp))
+        Button(
+            onClick = { c.connectHomeAssistant(url) },
+            enabled = !c.connecting && url.trim().startsWith("http"),
+            modifier = Modifier.fillMaxWidth().height(50.dp),
+            shape = RoundedCornerShape(50),
+        ) {
+            if (c.connecting) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp, color = MaterialTheme.colorScheme.onPrimary)
+            else Text("Connect")
+        }
+        Text(
+            "Keep the official WaterH app closed in local mode. If it connects to the bottle, it takes the drinks and Home Assistant never sees them.",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(top = 10.dp),
+        )
+        TextButton(onClick = { c.chooseMode(null) }) { Text("Back") }
+    }
+}
 
 @Composable
 private fun SignInCard(c: SyncController) {
@@ -396,21 +488,34 @@ private fun SettingsCard(c: SyncController, withPermissions: (() -> Unit) -> Uni
             Spacer(Modifier.width(12.dp))
             Switch(
                 checked = c.autoSync,
-                enabled = c.bottleAddress != null && c.signedIn,
+                enabled = c.bottleAddress != null && c.canSync,
                 onCheckedChange = { on ->
                     if (on) withPermissions { c.setAutoSyncEnabled(true) } else c.setAutoSyncEnabled(false)
                 },
             )
         }
         HorizontalDivider(Modifier.padding(vertical = 4.dp))
-        HomeAssistantSetting(c)
-        HorizontalDivider(Modifier.padding(vertical = 4.dp))
         SettingRow(
-            title = "WaterH account",
-            subtitle = if (c.signedIn) (c.email ?: "Signed in") + " · ${if (c.imperial) "oz" else "mL"}" else "Not signed in",
-            action = if (c.signedIn) "Sign out" else null,
-            onAction = { c.signOut() },
+            title = "Sync mode",
+            subtitle = when (c.mode) {
+                SyncController.MODE_LOCAL -> "Local only: drinks go to Home Assistant, no WaterH account."
+                SyncController.MODE_CLOUD -> "WaterH account: drinks go to WaterH."
+                else -> "Not chosen yet"
+            },
+            action = if (c.mode != null && !c.busy) "Change" else null,
+            onAction = { c.chooseMode(null) },
         )
+        HorizontalDivider(Modifier.padding(vertical = 4.dp))
+        HomeAssistantSetting(c)
+        if (!c.isLocal) {
+            HorizontalDivider(Modifier.padding(vertical = 4.dp))
+            SettingRow(
+                title = "WaterH account",
+                subtitle = if (c.signedIn) (c.email ?: "Signed in") + " · ${if (c.imperial) "oz" else "mL"}" else "Not signed in",
+                action = if (c.signedIn) "Sign out" else null,
+                onAction = { c.signOut() },
+            )
+        }
         HorizontalDivider(Modifier.padding(vertical = 4.dp))
         SettingRow(
             title = "Bottle",

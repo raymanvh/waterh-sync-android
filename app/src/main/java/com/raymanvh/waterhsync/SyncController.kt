@@ -52,11 +52,33 @@ class SyncController private constructor(context: Context) : BottleClient.Listen
         private set
     var email by mutableStateOf(api.email)
         private set
-    var imperial by mutableStateOf(api.imperial)
+    var imperial by mutableStateOf(
+        prefs.getString(KEY_LOCAL_UNIT, null)?.let { it == "oz" }
+            ?.takeIf { prefs.getString(KEY_MODE, null) == MODE_LOCAL } ?: api.imperial,
+    )
         private set
     var signingIn by mutableStateOf(false)
         private set
     var signInError by mutableStateOf<String?>(null)
+        private set
+
+    // ---- sync mode ----
+    /** "cloud" (WaterH account), "local" (Home Assistant only), or null until chosen. */
+    var mode by mutableStateOf(prefs.getString(KEY_MODE, null) ?: if (api.isSignedIn) MODE_CLOUD else null)
+        private set
+    val isLocal: Boolean get() = mode == MODE_LOCAL
+
+    /** Ready to sync: signed in to WaterH (cloud) or connected to Home Assistant (local). */
+    val canSync: Boolean
+        get() = when (mode) {
+            MODE_CLOUD -> signedIn
+            MODE_LOCAL -> haWebhookUrl != null
+            else -> false
+        }
+
+    var connecting by mutableStateOf(false)
+        private set
+    var connectError by mutableStateOf<String?>(null)
         private set
 
     // ---- bottle ----
@@ -173,8 +195,10 @@ class SyncController private constructor(context: Context) : BottleClient.Listen
     private fun start(readOnly: Boolean, background: Boolean) {
         val address = bottleAddress ?: return
         if (busy) return
-        if (!readOnly && !signedIn) {
-            if (!background) error = "Sign in to WaterH first."
+        if (!readOnly && !canSync) {
+            if (!background) {
+                error = if (isLocal) "Connect to Home Assistant first." else "Sign in to WaterH first."
+            }
             return
         }
         if (!background) stopScan()
@@ -190,7 +214,28 @@ class SyncController private constructor(context: Context) : BottleClient.Listen
             client.start(address, readOnly = true)
             return
         }
-        // Read the account goal first so this sync writes the current one to the bottle.
+        // Read the goal first so this sync writes the current one to the bottle.
+        if (isLocal) {
+            val url = haWebhookUrl ?: return
+            progress = "Checking Home Assistant…"
+            io.execute {
+                val result = runCatching { HomeAssistantReporter.hello(url) }
+                main.post {
+                    result.onSuccess {
+                        saveGoal(it.goalMl)
+                        it.imperial?.let { imp -> applyImperial(imp) }
+                        onRaw("Home Assistant: mode ${it.mode ?: "?"}, goal ${it.goalMl ?: "not set"} mL")
+                        if (it.mode == "cloud") onRaw("Warning: Home Assistant is in cloud mode and will refuse drinks")
+                    }.onFailure {
+                        // Still sync the bottle (clock, battery); drinks will wait on it.
+                        onRaw("Couldn't reach Home Assistant (${it.message}); drinks will stay on the bottle")
+                    }
+                    if (startCancelled) return@post
+                    client.start(address, readOnly = false)
+                }
+            }
+            return
+        }
         progress = "Checking your WaterH goal…"
         io.execute {
             val result = runCatching { api.refreshAccount() }
@@ -310,9 +355,13 @@ class SyncController private constructor(context: Context) : BottleClient.Listen
             setResult("Up to date — no new drinks on the bottle.")
             return
         }
-        progress = "Uploading ${drinks.size} drinks to WaterH…"
         val address = bottleAddress ?: return client.finishWithoutClearing("No bottle selected")
         val source = (client.deviceName ?: bottleName ?: "waterh-boost-946ml").lowercase()
+        if (isLocal) {
+            sendDrinksToHomeAssistant(drinks, total, source)
+            return
+        }
+        progress = "Uploading ${drinks.size} drinks to WaterH…"
         io.execute {
             val result = runCatching { api.uploadBottleDrinks(drinks, bleData, address, source) }
             main.post {
@@ -331,6 +380,82 @@ class SyncController private constructor(context: Context) : BottleClient.Listen
                 }
             }
         }
+    }
+
+    /** Local mode: Home Assistant saves the drinks; only then is the bottle cleared. */
+    private fun sendDrinksToHomeAssistant(drinks: List<LogRecord>, total: Int, source: String) {
+        val url = haWebhookUrl ?: return client.finishWithoutClearing("Home Assistant isn't connected")
+        if (drinks.isEmpty()) {
+            // Only flagged (non-drink) records: nothing to keep, clear them like the official app.
+            setResult("Up to date — no new drinks on the bottle.")
+            client.confirmUploaded(total)
+            return
+        }
+        progress = "Sending ${drinks.size} drinks to Home Assistant…"
+        io.execute {
+            val result = runCatching { HomeAssistantReporter.sendDrinks(url, drinks, source) }
+            main.post {
+                result.onSuccess {
+                    onRaw("Home Assistant saved ${it.accepted} new of ${drinks.size}")
+                    it.goalMl?.let { g -> saveGoal(g) }
+                    addHistory(drinks)
+                    setResult(
+                        "Synced ${drinks.size} ${if (drinks.size == 1) "drink" else "drinks"} " +
+                            "(${formatVolume(drinks.sumOf { d -> d.amountMl })}) to Home Assistant.",
+                    )
+                    client.confirmUploaded(total)
+                }.onFailure {
+                    client.finishWithoutClearing(
+                        "Couldn't send to Home Assistant: ${it.message}. Your drinks are still on the bottle and will sync next time.",
+                    )
+                }
+            }
+        }
+    }
+
+    // ======================================================================
+    // Mode
+
+    fun chooseMode(newMode: String?) {
+        if (busy) return
+        mode = newMode
+        connectError = null
+        prefs.edit().putString(KEY_MODE, newMode).apply()
+        if (!canSync && autoSync) SyncService.stop(appContext)
+        else ensureServiceRunning()
+    }
+
+    /** Local mode setup: check the URL reaches a local-mode WaterH integration, then save it. */
+    fun connectHomeAssistant(url: String) {
+        val clean = url.trim()
+        if (connecting || clean.isBlank()) return
+        connecting = true
+        connectError = null
+        io.execute {
+            val result = runCatching { HomeAssistantReporter.hello(clean) }
+            main.post {
+                connecting = false
+                result.onSuccess {
+                    if (isLocal && it.mode == "cloud") {
+                        connectError = "That WaterH integration is set up for a WaterH account. In Home Assistant, " +
+                            "add WaterH again and choose Local only, then use that URL."
+                        return@onSuccess
+                    }
+                    setHomeAssistantUrl(clean)
+                    saveGoal(it.goalMl)
+                    it.imperial?.let { imp -> applyImperial(imp) }
+                    haStatus = "Connected to Home Assistant"
+                    ensureServiceRunning()
+                }.onFailure {
+                    connectError = "Couldn't connect: ${it.message}"
+                }
+            }
+        }
+    }
+
+    private fun applyImperial(value: Boolean) {
+        imperial = value
+        prefs.edit().putString(KEY_LOCAL_UNIT, if (value) "oz" else "ml").apply()
     }
 
     override fun onRaw(line: String) {
@@ -488,5 +613,9 @@ class SyncController private constructor(context: Context) : BottleClient.Listen
         private const val KEY_HA_WEBHOOK = "ha_webhook"
         private const val KEY_GOAL = "account_goal_ml"
         private const val KEY_HA_STATUS = "ha_status"
+        private const val KEY_MODE = "sync_mode"
+        private const val KEY_LOCAL_UNIT = "local_unit"
+        const val MODE_CLOUD = "cloud"
+        const val MODE_LOCAL = "local"
     }
 }

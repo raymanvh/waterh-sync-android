@@ -1,8 +1,9 @@
 # WaterH Sync for Android
 
-Unofficial Android app that syncs your [WaterH](https://www.waterh.com) smart bottle in the background. Drink, and a minute later the drink is in your WaterH account, without opening the official app.
+Unofficial Android app that syncs your [WaterH](https://www.waterh.com) smart bottle in the background. Drink, and a minute later the drink is where you want it, without opening the official app. Two modes:
 
-It pairs with **[WaterH for Home Assistant](https://github.com/raymanvh/ha-waterh)**: WaterH Sync gets drinks from the bottle to WaterH's servers, and the integration brings them into Home Assistant.
+- **Local only**: drinks go straight from the bottle to **[Home Assistant](https://github.com/raymanvh/ha-waterh)**. No WaterH account, nothing sent to WaterH.
+- **WaterH account**: drinks are uploaded to your WaterH account, as the official app does, so they appear in the WaterH app and in the Home Assistant integration's cloud mode.
 
 > **Not affiliated with WaterH.** This app talks to the bottle and to WaterH's private API the same way the official app does, worked out by examining that app. A WaterH firmware or API change could break it at any time.
 
@@ -24,7 +25,8 @@ WaterH Sync does. It watches for your bottle and syncs it whenever the bottle wa
 ## Requirements
 
 - Android 12 or newer, with Bluetooth LE.
-- A WaterH account with an email and password. If you signed up with Google or Facebook, set a password in the WaterH app first.
+- **Local only:** Home Assistant with the WaterH integration v0.3.0+. No WaterH account needed.
+- **WaterH account:** an email and password login. If you signed up with Google or Facebook, set a password in the WaterH app first.
 - Tested with the **WaterH Boost 946 mL** (firmware 1.1.5). Other Boost bottles very likely work. **Vita** bottles use a different status format and aren't supported yet.
 
 ## Install
@@ -36,8 +38,20 @@ Or build it yourself (see [Building](#building)).
 
 ## Setup
 
+### Local only (Home Assistant, no WaterH account)
+
+1. In Home Assistant, install the [WaterH integration](https://github.com/raymanvh/ha-waterh) (v0.3.0 or newer), then **Add integration → WaterH → Local only**, and copy the webhook URL it shows.
+2. **Close the official WaterH app** and keep it closed. If it connects to the bottle, it takes the drinks, and Home Assistant never sees them.
+3. Open **WaterH Sync**, choose **Local only**, paste the URL, and tap **Connect**.
+4. Tap **Search for bottles**, tilt the bottle to wake it, and pick it.
+5. Tap **Sync now** once, then turn on **Automatic sync** in Settings.
+
+Your daily goal is set in Home Assistant (the **Daily goal** control), and the app writes it to the bottle on every sync. Drinks are cleared from the bottle only after Home Assistant has saved them. If Home Assistant can't be reached (for example, you're away and used a local address), they wait on the bottle until it can.
+
+### WaterH account
+
 1. **Close the official WaterH app** (Settings → Apps → WaterH → **Force stop**). The bottle accepts only one connection at a time, so the two apps would compete for it. You can keep the official app installed and open it occasionally; WaterH Sync just has to be the one connecting most of the time.
-2. Open **WaterH Sync** and **sign in** with your WaterH email and password.
+2. Open **WaterH Sync**, choose **WaterH account**, and **sign in** with your WaterH email and password.
 3. Tap **Search for bottles**, tilt the bottle to wake it, and pick it from the list.
 4. Tap **Sync now** once to check everything works.
 5. In **Settings**, turn on **Automatic sync**, and allow notifications when asked.
@@ -59,11 +73,12 @@ The app reports after every sync; **Send test** reports right away. If you use a
 
 Each sync does what the official app does when you open it:
 
-1. Connects to the bottle over Bluetooth LE and reads its status (battery, clock, goal, reminder).
-2. Sets the bottle's clock, resending its own goal and reminder unchanged.
-3. Reads the drinks stored on the bottle.
-4. Uploads them to your WaterH account in the official app's format.
-5. Once WaterH accepts them, tells the bottle to clear them.
+1. Reads your goal (from WaterH, or from Home Assistant in local mode).
+2. Connects to the bottle over Bluetooth LE and reads its status (battery, clock, goal, reminder).
+3. Sets the bottle's clock and goal, keeping its reminder settings.
+4. Reads the drinks stored on the bottle.
+5. Sends them to WaterH (in the official app's format) or, in local mode, to Home Assistant.
+6. Once they've been accepted and saved, tells the bottle to clear them.
 
 In the background, the app runs a low-power Bluetooth scan filtered to your bottle. When the bottle advertises (it does when it wakes up), a sync starts, with a 3-minute cooldown between attempts.
 
@@ -72,7 +87,7 @@ The Bluetooth protocol is documented in [docs/PROTOCOL.md](docs/PROTOCOL.md).
 ## Privacy
 
 - Your **password is never stored**. It's sent once to WaterH to get a sign-in token, which is kept in the app's private storage.
-- The app talks only to **your bottle**, **api.waterh.com**, and (if you set it up) **your own Home Assistant**. No analytics, no other servers.
+- The app talks only to **your bottle**, **api.waterh.com** (WaterH account mode only), and **your own Home Assistant** (if set up). In local mode it never contacts WaterH. No analytics, no other servers.
 - The WaterH client ID and secret in the source are the official app's public app credentials (the same ones every copy of the WaterH app ships with), not personal keys.
 
 ## Building
