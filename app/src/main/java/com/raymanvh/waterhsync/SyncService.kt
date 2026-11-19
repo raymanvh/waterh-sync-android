@@ -25,7 +25,12 @@ import java.util.Locale
 /**
  * Keeps a low-power Bluetooth scan running for the saved bottle. The bottle
  * advertises when it wakes up (after a drink, or when tilted or charging);
- * each time it's seen, a sync runs unless one ran within [COOLDOWN_MS].
+ * each time it's seen, a sync runs unless one ran recently (see [cooldownMs]).
+ *
+ * Local mode syncs as often as every minute so back-to-back sips arrive
+ * quickly; WaterH account mode keeps 3 minutes to stay light on WaterH's API.
+ * While the bottle sits on its charger it advertises constantly, so after an
+ * empty sync on the charger the app backs off to 15 minutes.
  *
  * Runs as a foreground service so Android keeps it alive, which is why it
  * shows a permanent notification.
@@ -94,10 +99,19 @@ class SyncService : Service() {
         val now = System.currentTimeMillis()
         lastSeen = now
         if (controller.busy || !controller.canSync) return
-        if (now - lastAttempt < COOLDOWN_MS) return
+        if (now - lastAttempt < cooldownMs()) return
         lastAttempt = now
         controller.syncInBackground()
         updateNotification()
+    }
+
+    private fun cooldownMs(): Long {
+        val charging = controller.bottleInfo?.charging == true
+        return when {
+            charging && !controller.lastSyncHadDrinks -> CHARGING_IDLE_COOLDOWN_MS
+            controller.isLocal -> LOCAL_COOLDOWN_MS
+            else -> CLOUD_COOLDOWN_MS
+        }
     }
 
     private fun startScan() {
@@ -155,7 +169,9 @@ class SyncService : Service() {
     companion object {
         private const val CHANNEL_ID = "sync"
         private const val NOTIFICATION_ID = 1
-        private const val COOLDOWN_MS = 3 * 60_000L
+        private const val LOCAL_COOLDOWN_MS = 60_000L
+        private const val CLOUD_COOLDOWN_MS = 3 * 60_000L
+        private const val CHARGING_IDLE_COOLDOWN_MS = 15 * 60_000L
         private const val RESCAN_MS = 20 * 60_000L
 
         fun createChannel(context: Context) {

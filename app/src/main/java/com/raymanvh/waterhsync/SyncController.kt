@@ -108,6 +108,10 @@ class SyncController private constructor(context: Context) : BottleClient.Listen
 
     /** Account goal in mL, written to the bottle on each sync so its display matches WaterH. */
     private var accountGoalMl: Int? = prefs.getInt(KEY_GOAL, -1).takeIf { it > 0 }
+    /** Whether the most recent full sync found drinks; drives the background cooldown. */
+    var lastSyncHadDrinks = false
+        private set
+
     /** Local mode: Home Assistant's total for today, from this sync's check-in. */
     private var haTodayMl: Int? = null
 
@@ -356,6 +360,7 @@ class SyncController private constructor(context: Context) : BottleClient.Listen
             return
         }
         if (!complete) return // BottleClient finishes with an error and never clears.
+        lastSyncHadDrinks = drinks.isNotEmpty()
         if (total == 0) {
             setResult("Up to date — no new drinks on the bottle.")
             // Local mode: keep the bottle's "today" display equal to Home Assistant's.

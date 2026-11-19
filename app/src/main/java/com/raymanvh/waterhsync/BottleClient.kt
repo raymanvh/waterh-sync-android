@@ -18,7 +18,9 @@ import com.raymanvh.waterhsync.protocol.Packet
 import com.raymanvh.waterhsync.protocol.WaterH
 import com.raymanvh.waterhsync.protocol.bytesToHex
 import com.raymanvh.waterhsync.protocol.parsePacket
+import java.time.Duration
 import java.time.LocalDateTime
+import kotlin.math.abs
 
 /**
  * One Bluetooth session with a WaterH bottle, following the official app's
@@ -57,7 +59,13 @@ class BottleClient(private val context: Context, private val listener: Listener)
     private companion object {
         /** Sanity range for a goal written to the bottle (the WaterH app allows 500–10,000 mL). */
         val GOAL_RANGE_ML = 500..10_000
+
+        /** Leave the bottle's clock alone when it's within this many seconds of the phone's. */
+        const val CLOCK_TOLERANCE_S = 30L
     }
+
+    /** The bottle's own "today" total from this session's status reply. */
+    private var statusTodayMl: Int? = null
 
     private enum class Stage { IDLE, CONNECTING, STATUS, SETTINGS, LOGS, UPLOADING, CLEARING, DONE }
 
@@ -100,6 +108,7 @@ class BottleClient(private val context: Context, private val listener: Listener)
         this.readOnly = readOnly
         deviceName = runCatching { device.name }.getOrNull()
         collector = LogCollector()
+        statusTodayMl = null
         discoveryStarted = false
         notifySetupStarted = false
         stage = Stage.CONNECTING
@@ -121,7 +130,8 @@ class BottleClient(private val context: Context, private val listener: Listener)
     fun completeSync(clearRecords: Int, todayMl: Int?) {
         val g = gatt ?: return
         if (stage != Stage.UPLOADING) return
-        if (clearRecords <= 0 && todayMl == null) {
+        if (clearRecords <= 0 && (todayMl == null || todayMl == statusTodayMl)) {
+            if (todayMl != null) listener.onRaw("Bottle's today total already $todayMl mL; not rewriting")
             done()
             return
         }
@@ -133,9 +143,16 @@ class BottleClient(private val context: Context, private val listener: Listener)
             sendLater(g, WaterH.clearRecords(clearRecords), "clear $clearRecords synced records", delay)
             delay += 1_200
         }
-        if (todayMl != null) {
+        if (todayMl != null && todayMl == statusTodayMl) {
+            listener.onRaw("Bottle's today total already $todayMl mL; not rewriting")
+        } else if (todayMl != null) {
             sendLater(g, WaterH.setTodayTotal(todayMl), "set bottle's today total to $todayMl mL", delay)
             delay += 1_200
+        }
+        if (delay == 1_000L) {
+            // Nothing was sent after all.
+            done()
+            return
         }
         // The official app doesn't wait for replies; give the writes time to land.
         main.postDelayed({ if (g == gatt && stage == Stage.CLEARING) done() }, delay + 1_500)
@@ -268,20 +285,31 @@ class BottleClient(private val context: Context, private val listener: Listener)
 
     private fun handle(g: BluetoothGatt, value: ByteArray) {
         val packet = parsePacket(value)
-        listener.onRaw("← ${bytesToHex(value)}  (${packet::class.simpleName})")
+        val kind = if (packet is Packet.Other) packet.description else packet::class.simpleName
+        listener.onRaw("← ${bytesToHex(value)}  ($kind)")
         when (packet) {
             is Packet.BoostStatus -> {
                 listener.onStatus(packet)
                 if (stage != Stage.STATUS) return
+                statusTodayMl = packet.todayMl
                 val goal = goalProvider?.invoke()?.takeIf { it in GOAL_RANGE_ML } ?: packet.goalMl
                 val reminder = packet.reminderHex
-                if (!readOnly && goal != null && reminder != null) {
+                val now = LocalDateTime.now()
+                val clockDriftS = packet.clock.toLocalDateTimeOrNull()
+                    ?.let { abs(Duration.between(it, now).seconds) }
+                if (!readOnly && goal != null && reminder != null &&
+                    goal == packet.goalMl && clockDriftS != null && clockDriftS <= CLOCK_TOLERANCE_S
+                ) {
+                    // Nothing to change: spare the bottle a write.
+                    listener.onRaw("Clock (off by ${clockDriftS}s) and goal already correct; not rewriting")
+                    requestLogs()
+                } else if (!readOnly && goal != null && reminder != null) {
                     stage = Stage.SETTINGS
                     listener.onProgress("Setting the bottle's clock…")
                     armTimeout(6_000, null)
                     // Reminder settings are resent unchanged; the goal follows the account.
                     val label = if (goal != packet.goalMl) "set clock, goal ${packet.goalMl} → $goal mL" else "set clock"
-                    sendLater(g, WaterH.syncSettings(goal, LocalDateTime.now(), reminder), label, 1_000)
+                    sendLater(g, WaterH.syncSettings(goal, now, reminder), label, 1_000)
                 } else {
                     requestLogs()
                 }

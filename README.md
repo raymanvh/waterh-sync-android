@@ -80,7 +80,13 @@ Each sync does what the official app does when you open it:
 5. Sends them to WaterH (in the official app's format) or, in local mode, to Home Assistant.
 6. Once they've been accepted and saved, tells the bottle to clear them.
 
-In the background, the app runs a low-power Bluetooth scan filtered to your bottle. When the bottle advertises (it does when it wakes up), a sync starts, with a 3-minute cooldown between attempts.
+In the background, the app runs a low-power Bluetooth scan filtered to your bottle. When the bottle advertises (it does when it wakes up, e.g. after a drink), a sync starts. Between syncs it waits:
+
+- **1 minute** in local mode, so back-to-back sips arrive quickly.
+- **3 minutes** in WaterH account mode, to stay light on WaterH's servers.
+- **15 minutes** while the bottle is on its charger and the last sync found nothing new (it advertises constantly while charging).
+
+To spare the bottle, the app leaves its clock, goal and daily total alone when they're already correct, and only writes what actually changed.
 
 The Bluetooth protocol is documented in [docs/PROTOCOL.md](docs/PROTOCOL.md).
 

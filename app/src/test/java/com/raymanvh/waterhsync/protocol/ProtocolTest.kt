@@ -59,6 +59,8 @@ class ProtocolTest {
         // 74.6 oz ≈ 2206 mL = 0x089E
         assertEquals("505400040304089E", bytesToHex(WaterH.setTodayTotal(2206)))
         assertEquals("5054000403040000", bytesToHex(WaterH.setTodayTotal(0)))
+        // Reply captured from the real bottle after setting the total.
+        assertEquals(Packet.Other("today total saved", "52500003020400"), parsePacket(hexToBytes("52500003020400")))
     }
 
     @Test

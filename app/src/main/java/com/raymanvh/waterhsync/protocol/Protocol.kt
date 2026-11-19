@@ -229,6 +229,7 @@ fun parsePacket(value: ByteArray): Packet {
         when (value.u(5)) {
             38 -> return Packet.Other("reminder response", hex)
             5 -> return Packet.Other("goal response", hex)
+            4 -> return Packet.Other("today total saved", hex)
             6 -> return when (value.u(6)) {
                 0 -> Packet.NoLogs
                 1 -> Packet.LogsFound
